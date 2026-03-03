@@ -1,5 +1,6 @@
 const CACHE_NAME = "virtual-root-cache-v2";
 const VIRTUAL_ROOT = "/virtual-root/";
+const VIRTUAL_ROOT_BARE = VIRTUAL_ROOT.replace(/\/$/, "");
 const META_PATH = `${VIRTUAL_ROOT}__virtual_root_meta__.json`;
 const KEEPALIVE_PATH = `${VIRTUAL_ROOT}__sw_keepalive__`;
 
@@ -38,7 +39,7 @@ function getLookupCandidates(pathname, entryPath) {
   const normalized = pathname.replace(/\/+$/, "");
   const candidates = new Set([pathname]);
 
-  if (pathname === VIRTUAL_ROOT.slice(0, -1) || pathname === VIRTUAL_ROOT) {
+  if (pathname === VIRTUAL_ROOT_BARE || pathname === VIRTUAL_ROOT) {
     if (entryPath) candidates.add(`${VIRTUAL_ROOT}${entryPath}`);
     candidates.add(`${VIRTUAL_ROOT}index.html`);
   }
@@ -122,7 +123,7 @@ self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
   if (event.request.method !== "GET") return;
   if (requestUrl.origin !== self.location.origin) return;
-  if (!requestUrl.pathname.startsWith(VIRTUAL_ROOT)) return;
+  if (!(requestUrl.pathname === VIRTUAL_ROOT_BARE || requestUrl.pathname.startsWith(VIRTUAL_ROOT))) return;
 
   event.respondWith(fromVirtualRoot(event.request));
 });
