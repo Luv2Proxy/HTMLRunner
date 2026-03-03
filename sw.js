@@ -1,5 +1,8 @@
-const CACHE_NAME = "virtual-root-cache-v1";
+const CACHE_NAME = "virtual-root-cache-v2";
 const VIRTUAL_ROOT = "/virtual-root/";
+const VIRTUAL_ROOT_BARE = VIRTUAL_ROOT.replace(/\/$/, "");
+const META_PATH = `${VIRTUAL_ROOT}__virtual_root_meta__.json`;
+const KEEPALIVE_PATH = `${VIRTUAL_ROOT}__sw_keepalive__`;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -32,9 +35,14 @@ function getMimeType(pathname) {
   return MIME_TYPES[lower.slice(dot)] || "application/octet-stream";
 }
 
-function possiblePaths(pathname) {
+function getLookupCandidates(pathname, entryPath) {
   const normalized = pathname.replace(/\/+$/, "");
   const candidates = new Set([pathname]);
+
+  if (pathname === VIRTUAL_ROOT_BARE || pathname === VIRTUAL_ROOT) {
+    if (entryPath) candidates.add(`${VIRTUAL_ROOT}${entryPath}`);
+    candidates.add(`${VIRTUAL_ROOT}index.html`);
+  }
 
   if (pathname.endsWith("/")) {
     candidates.add(`${pathname}index.html`);
@@ -45,27 +53,87 @@ function possiblePaths(pathname) {
     candidates.add(`${pathname}/index.html`.replace(/\/+/g, "/"));
   }
 
+  if (entryPath) {
+    candidates.add(`${VIRTUAL_ROOT}${entryPath}`);
+  }
+
   return [...candidates];
+}
+
+async function readMetadata(cache) {
+  const response = await cache.match(META_PATH);
+  if (!response) return { entry: null };
+
+  try {
+    const payload = await response.json();
+    return { entry: payload?.entry || null };
+  } catch {
+    return { entry: null };
+  }
+}
+
+
+function getDirectoryScope(pathname) {
+  const normalized = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex < 0) return VIRTUAL_ROOT;
+  return `${normalized.slice(0, slashIndex + 1)}`;
+}
+
+function injectPerPageRegistration(htmlText, resolvedPath) {
+  const scopePath = getDirectoryScope(resolvedPath);
+  const script = `
+<script>(function(){if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js',{scope:${JSON.stringify(scopePath)}}).catch(function(){});}})();<\/script>
+`;
+
+  if (/<\/head>/i.test(htmlText)) {
+    return htmlText.replace(/<\/head>/i, `${script}</head>`);
+  }
+  if (/<\/body>/i.test(htmlText)) {
+    return htmlText.replace(/<\/body>/i, `${script}</body>`);
+  }
+  return `${htmlText}${script}`;
+}
+
+async function createTypedResponse(response, resolvedPath) {
+  const headers = new Headers(response.headers);
+  const mimeType = getMimeType(resolvedPath);
+  headers.set("Content-Type", mimeType);
+  headers.set("X-Virtual-Path", resolvedPath);
+
+  if (/\.html?$/i.test(resolvedPath)) {
+    const htmlText = await response.text();
+    const injected = injectPerPageRegistration(htmlText, resolvedPath);
+    return new Response(injected, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  return new Response(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 async function fromVirtualRoot(request) {
   const cache = await caches.open(CACHE_NAME);
   const url = new URL(request.url);
-  const lookupPaths = possiblePaths(url.pathname);
 
-  for (const path of lookupPaths) {
+  if (url.pathname === KEEPALIVE_PATH) {
+    return new Response("ok", { status: 204 });
+  }
+
+  const { entry } = await readMetadata(cache);
+  const candidates = getLookupCandidates(url.pathname, entry);
+
+  for (const path of candidates) {
     const response = await cache.match(path);
-    if (!response) continue;
-
-    const headers = new Headers(response.headers);
-    headers.set("Content-Type", getMimeType(path));
-    headers.set("X-Virtual-Path", path);
-
-    return new Response(await response.arrayBuffer(), {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
+    if (response) {
+      return createTypedResponse(response, path);
+    }
   }
 
   return new Response(`Not found in virtual root: ${url.pathname}`, {
@@ -82,12 +150,15 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener("message", () => {
+  // Keep-alive messages are intentionally ignored; receiving them helps warm startup paths.
+});
+
 self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
-
   if (event.request.method !== "GET") return;
   if (requestUrl.origin !== self.location.origin) return;
-  if (!requestUrl.pathname.startsWith(VIRTUAL_ROOT)) return;
+  if (!(requestUrl.pathname === VIRTUAL_ROOT_BARE || requestUrl.pathname.startsWith(VIRTUAL_ROOT))) return;
 
   event.respondWith(fromVirtualRoot(event.request));
 });

@@ -1,5 +1,6 @@
-const CACHE_NAME = "virtual-root-cache-v1";
+const CACHE_NAME = "virtual-root-cache-v2";
 const VIRTUAL_ROOT = "/virtual-root/";
+const META_PATH = `${VIRTUAL_ROOT}__virtual_root_meta__.json`;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -33,6 +34,8 @@ const entryLink = document.querySelector("#entryLink");
 const fileList = document.querySelector("#fileList");
 const preview = document.querySelector("#preview");
 
+let keepAliveTimer;
+
 function setStatus(message) {
   statusNode.textContent = message;
 }
@@ -50,19 +53,16 @@ function normalizePath(path) {
 function getMimeType(path) {
   const lower = path.toLowerCase();
   const dot = lower.lastIndexOf(".");
-  if (dot === -1) {
-    return "application/octet-stream";
-  }
-  const ext = lower.slice(dot);
-  return MIME_TYPES[ext] ?? "application/octet-stream";
+  if (dot === -1) return "application/octet-stream";
+  return MIME_TYPES[lower.slice(dot)] ?? "application/octet-stream";
 }
 
 function scoreRootCandidate(path) {
   const normalized = path.toLowerCase();
   const parts = normalized.split("/");
-  const depth = parts.length;
   const name = parts[parts.length - 1];
   const startsWithIndex = name === "index.html" ? 0 : 1;
+  const depth = parts.length;
   const hasDist = parts.includes("dist") || parts.includes("build") ? 1 : 0;
   return [startsWithIndex, depth, hasDist, normalized.length, normalized];
 }
@@ -87,7 +87,7 @@ async function ensureServiceWorker() {
     throw new Error("This browser does not support Service Worker.");
   }
 
-  const registration = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+  const registration = await navigator.serviceWorker.register("./sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
 
   if (!navigator.serviceWorker.controller) {
@@ -111,6 +111,11 @@ async function cacheFile(cache, virtualPath, data, contentType) {
   );
 }
 
+async function writeMetadata(cache, { files, entry }) {
+  const payload = JSON.stringify({ files, entry, updatedAt: Date.now() });
+  await cacheFile(cache, META_PATH, payload, "application/json; charset=utf-8");
+}
+
 function renderFileList(paths) {
   fileList.innerHTML = "";
   for (const path of paths) {
@@ -125,7 +130,7 @@ async function listVirtualRootFiles() {
   const keys = await cache.keys();
   const paths = keys
     .map((req) => new URL(req.url).pathname)
-    .filter((pathname) => pathname.startsWith(VIRTUAL_ROOT))
+    .filter((pathname) => pathname.startsWith(VIRTUAL_ROOT) && pathname !== META_PATH)
     .map((pathname) => pathname.slice(VIRTUAL_ROOT.length))
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
@@ -144,42 +149,46 @@ async function listVirtualRootFiles() {
 }
 
 async function extractZips(files) {
-  if (!files.length) {
-    throw new Error("Select at least one ZIP file.");
-  }
+  if (!files.length) throw new Error("Select at least one ZIP file.");
 
   const cache = await caches.open(CACHE_NAME);
-  const extractedPaths = [];
-
   for (const file of files) {
     const zip = await JSZip.loadAsync(file);
-    const entries = Object.values(zip.files);
-
-    for (const entry of entries) {
+    for (const entry of Object.values(zip.files)) {
       if (entry.dir) continue;
       const relativePath = normalizePath(entry.name);
       if (!relativePath) continue;
       const virtualPath = `${VIRTUAL_ROOT}${relativePath}`;
       const arrayBuffer = await entry.async("arraybuffer");
       await cacheFile(cache, virtualPath, arrayBuffer, getMimeType(relativePath));
-      extractedPaths.push(relativePath);
     }
   }
 
-  extractedPaths.sort((a, b) => a.localeCompare(b));
-  return extractedPaths;
+  const state = await listVirtualRootFiles();
+  await writeMetadata(cache, { files: state.paths, entry: state.entry });
+  return state;
+}
+
+function startKeepAlive(registration) {
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+
+  keepAliveTimer = window.setInterval(async () => {
+    try {
+      registration.active?.postMessage({ type: "KEEP_ALIVE", ts: Date.now() });
+      await fetch(`${VIRTUAL_ROOT}__sw_keepalive__`, { cache: "no-store" });
+    } catch {
+      // Ignore temporary failures; next interval will retry.
+    }
+  }, 25000);
 }
 
 extractBtn.addEventListener("click", async () => {
   try {
     const files = [...zipInput.files];
     setStatus(`Extracting ${files.length} ZIP file(s)…`);
-    await extractZips(files);
-    const { paths, entry } = await listVirtualRootFiles();
+    const { paths, entry } = await extractZips(files);
     setStatus(`Done. Cached ${paths.length} file(s) under ${VIRTUAL_ROOT}.`);
-    if (entry) {
-      preview.src = `${VIRTUAL_ROOT}${entry}`;
-    }
+    if (entry) preview.src = `${VIRTUAL_ROOT}${entry}`;
   } catch (error) {
     setStatus(`Error: ${error.message}`);
   }
@@ -194,6 +203,7 @@ clearBtn.addEventListener("click", async () => {
       .filter((pathname) => pathname.startsWith(VIRTUAL_ROOT))
       .map((pathname) => cache.delete(pathname)),
   );
+  await writeMetadata(cache, { files: [], entry: null });
   await listVirtualRootFiles();
   preview.removeAttribute("src");
   setStatus("Cleared /virtual-root/ from cache.");
@@ -201,12 +211,11 @@ clearBtn.addEventListener("click", async () => {
 
 (async function init() {
   try {
-    await ensureServiceWorker();
+    const registration = await ensureServiceWorker();
+    startKeepAlive(registration);
     setStatus("Service worker active. Ready to extract ZIP files.");
     const { entry } = await listVirtualRootFiles();
-    if (entry) {
-      preview.src = `${VIRTUAL_ROOT}${entry}`;
-    }
+    if (entry) preview.src = `${VIRTUAL_ROOT}${entry}`;
   } catch (error) {
     setStatus(`Service worker setup failed: ${error.message}`);
   }
