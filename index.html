@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZIP Website Runner</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        margin: 2rem auto;
+        max-width: 900px;
+        padding: 0 1rem;
+      }
+      .panel {
+        border: 1px solid #8885;
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+      }
+      button,
+      input,
+      select {
+        padding: 0.55rem 0.9rem;
+      }
+      code {
+        background: #8882;
+        padding: 0.1rem 0.25rem;
+        border-radius: 4px;
+      }
+      ul {
+        margin: 0.5rem 0 0;
+        padding-left: 1.2rem;
+        max-height: 220px;
+        overflow: auto;
+      }
+      iframe {
+        width: 100%;
+        min-height: 65vh;
+        border: 1px solid #8885;
+        border-radius: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Client-Side ZIP Website Runner</h1>
+    <p>
+      Upload ZIP files or import folders directly. Their contents are extracted into Cache Storage under
+      <code>/virtual-root/</code> and served by a Service Worker. Navigation and reloads are handled from cache.
+    </p>
+
+    <div class="panel">
+      <div class="row">
+        <input id="zipInput" type="file" accept=".zip,application/zip" multiple />
+        <button id="extractBtn" type="button">Extract ZIP(s)</button>
+        <button id="importFolderBtn" type="button">Import folder</button>
+        <button id="clearBtn" type="button">Clear virtual root</button>
+      </div>
+      <div class="row" style="margin-top: 0.75rem">
+        <select id="folderSelect">
+          <option value="">No saved folder</option>
+        </select>
+        <button id="loadFolderBtn" type="button">Load saved folder</button>
+        <button id="deleteFolderBtn" type="button">Forget saved folder</button>
+      </div>
+      <p id="status">Registering service worker…</p>
+      <p>
+        Auto-detected entry HTML:
+        <a id="entryLink" href="#" target="preview" rel="noopener">(none)</a>
+      </p>
+      <ul id="fileList"></ul>
+    </div>
+
+    <iframe id="preview" name="preview" title="Website preview"></iframe>
+
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
